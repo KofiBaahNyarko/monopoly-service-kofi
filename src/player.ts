@@ -15,3 +15,13 @@ export interface PlayerInput {
     email: string;
     name: string;
 }
+
+export interface Game {
+    id: number;
+    time: Date | string;
+}
+
+export interface GamePlayer {
+    name: string;
+    score: number;
+}

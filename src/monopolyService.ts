@@ -2,7 +2,7 @@
  * This module implements a REST-inspired web service for the Monopoly DB hosted
  * on PostgreSQL for Azure. Notes:
  *
- * - Currently, this service supports the Player table only.
+ * - Currently, this service supports the Player and Game tables.
  *
  * - This service is written in TypeScript and uses Node type-stripping, which
  * is experimental, but simple (see: https://nodejs.org/en/learn/typescript/run-natively).
@@ -44,7 +44,7 @@ import pgPromise from 'pg-promise';
 
 // Import types for compile-time checking.
 import type { Request, Response, NextFunction } from 'express';
-import type { Player, PlayerInput } from './player.js';
+import type { Player, PlayerInput, Game, GamePlayer } from './player.js';
 
 // Set up the database
 const db = pgPromise()({
@@ -53,6 +53,8 @@ const db = pgPromise()({
     database: process.env.DB_DATABASE,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
+    // Azure PostgreSQL requires SSL connections
+    ssl: true,
 });
 
 // Configure the server and its routes
@@ -67,6 +69,9 @@ router.get('/players/:id', readPlayer);
 router.put('/players/:id', updatePlayer);
 router.post('/players', createPlayer);
 router.delete('/players/:id', deletePlayer);
+router.get('/games', readGames);
+router.get('/games/:id', readGame);
+router.delete('/games/:id', deleteGame);
 
 // For testing only; vulnerable to SQL injection!
 // router.get('/bad/players/:id', readPlayerBad);
@@ -210,6 +215,64 @@ function deletePlayer(request: Request, response: Response, next: NextFunction):
         return t.none('DELETE FROM PlayerGame WHERE playerID=${id}', request.params)
             .then(() => {
                 return t.oneOrNone('DELETE FROM Player WHERE id=${id} RETURNING id', request.params);
+            });
+    })
+        .then((data: { id: number } | null): void => {
+            returnDataOr404(response, data);
+        })
+        .catch((error: Error): void => {
+            next(error);
+        });
+}
+
+/**
+ * Retrieves all games from the database.
+ */
+function readGames(_request: Request, response: Response, next: NextFunction): void {
+    db.manyOrNone('SELECT * FROM Game')
+        .then((data: Game[]): void => {
+            // data is a list, never null, so returnDataOr404 isn't needed.
+            response.send(data);
+        })
+        .catch((error: Error): void => {
+            next(error);
+        });
+}
+
+/**
+ * Retrieves the name and score for every player who played in the specified game.
+ */
+function readGame(request: Request, response: Response, next: NextFunction): void {
+    db.manyOrNone(
+        'SELECT Player.name, PlayerGame.score FROM PlayerGame JOIN Player ON PlayerGame.playerID = Player.id WHERE PlayerGame.gameID=${id}',
+        request.params
+    )
+        .then((data: GamePlayer[]): void => {
+            // If no players found for this game, return 404
+            if (data.length === 0) {
+                response.sendStatus(404);
+            } else {
+                response.send(data);
+            }
+        })
+        .catch((error: Error): void => {
+            next(error);
+        });
+}
+
+/**
+ * This function deletes an existing game based on ID.
+ *
+ * Deleting a game requires cascading deletion of PlayerGame records first to
+ * maintain referential integrity. This function uses a transaction (`tx()`) to
+ * ensure that both the PlayerGame records and the Game record are deleted
+ * atomically (i.e., either both operations succeed or both fail together).
+ */
+function deleteGame(request: Request, response: Response, next: NextFunction): void {
+    db.tx((t) => {
+        return t.none('DELETE FROM PlayerGame WHERE gameID=${id}', request.params)
+            .then(() => {
+                return t.oneOrNone('DELETE FROM Game WHERE id=${id} RETURNING id', request.params);
             });
     })
         .then((data: { id: number } | null): void => {
